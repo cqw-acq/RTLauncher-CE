@@ -78,7 +78,7 @@ jobs:
       - name: Install Zig and cargo-zigbuild
         run: |
           cargo install cargo-zigbuild
-          rustup target add aarch64-pc-windows-gnu
+          rustup target add aarch64-pc-windows-msvc
       - name: Build
         run: cargo zigbuild --release --target aarch64-pc-windows-msvc
       - uses: actions/upload-artifact@v4
