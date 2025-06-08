@@ -71,16 +71,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Zig and cargo-zigbuild
-        run: |
-          cargo install cargo-zigbuild
-          rustup target add aarch64-pc-windows-msvc
-      - name: Build
-        run: cargo zigbuild --release --target aarch64-pc-windows-msvc
+      - run: cargo install cross
+      - run: cross build --release --target aarch64-pc-windows-gnu
       - uses: actions/upload-artifact@v4
         with:
           name: windows-aarch64
-          path: target/aarch64-pc-windows-msvc/release/
+          path: target/aarch64-pc-windows-gnu/release/
 
   # === macOS ===
   macos-x86_64:
