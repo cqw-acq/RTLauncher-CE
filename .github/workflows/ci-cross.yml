@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-x86_64-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cross
+        run: cargo install cross
+
+      - name: Build
+        run: cross build --release --target x86_64-unknown-linux-gnu
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: x86_64-linux
+          path: target/x86_64-unknown-linux-gnu/release/*
+
+  build-aarch64-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install cross
+      - run: cross build --release --target aarch64-unknown-linux-gnu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aarch64-linux
+          path: target/aarch64-unknown-linux-gnu/release/*
+
+  build-i686-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install cross
+      - run: cross build --release --target i686-unknown-linux-gnu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i686-linux
+          path: target/i686-unknown-linux-gnu/release/*
+
+  build-x86_64-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install cross
+      - run: cross build --release --target x86_64-pc-windows-gnu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x86_64-windows
+          path: target/x86_64-pc-windows-gnu/release/*
+
+  build-i686-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install cross
+      - run: cross build --release --target i686-pc-windows-gnu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: i686-windows
+          path: target/i686-pc-windows-gnu/release/*
+
+  build-aarch64-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install cross
+      - run: cross build --release --target aarch64-pc-windows-gnu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aarch64-windows
+          path: target/aarch64-pc-windows-gnu/release/*
+
+  build-x86_64-macos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install cross
+      - run: cross build --release --target x86_64-apple-darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x86_64-macos
+          path: target/x86_64-apple-darwin/release/*
+
+  build-aarch64-macos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo install cross
+      - run: cross build --release --target aarch64-apple-darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aarch64-macos
+          path: target/aarch64-apple-darwin/release/*
