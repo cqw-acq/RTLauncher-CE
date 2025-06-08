@@ -72,7 +72,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo install cross
-             rustup target add aarch64-pc-windows-msvc
+      - run: rustup target add aarch64-pc-windows-msvc
       - run: cross build --release --target aarch64-pc-windows-msvc
       - uses: actions/upload-artifact@v4
         with:
