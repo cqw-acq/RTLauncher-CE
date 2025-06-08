@@ -71,20 +71,21 @@ jobs:
           path: target/i686-pc-windows-gnu/release/
 
   # Windows aarch64 (zigbuild)
-  windows-aarch64:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Zig and cargo-zigbuild
-        run: |
-          cargo install cargo-zigbuild
-          rustup target add aarch64-pc-windows-msvc
-      - name: Build
-        run: cargo zigbuild --release --target aarch64-pc-windows-msvc
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-aarch64
-          path: target/aarch64-pc-windows-gnu/release/
+windows-aarch64:
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - name: Install Zig and cargo-zigbuild
+      run: |
+        cargo install cargo-zigbuild
+        rustup target add aarch64-pc-windows-msvc
+    - name: Build
+      run: cargo zigbuild --release --target aarch64-pc-windows-msvc
+    - uses: actions/upload-artifact@v4
+      with:
+        name: windows-aarch64
+        path: target/aarch64-pc-windows-msvc/release/
+
 
   # macOS x86_64 (native)
   macos-x86_64:
