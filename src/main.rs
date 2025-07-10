@@ -1,188 +1,219 @@
-use anyhow::{Context, Result};
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+use actix::prelude::*;
+use actix_cors::Cors;
+use actix_files as fs;
+use actix_web::{
+    get, post,
+    web::{self, Data, Json, Path, Payload},
+    App, HttpRequest, HttpResponse, HttpServer, Responder,
+};
+use actix_web_actors::ws;
+use futures::executor::block_on;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+    time::Duration,
+};
+use tokio::{sync::Mutex, task, time::sleep};
+use uuid::Uuid;
 
-pub struct DownloadConfig {
-    pub url: String,
-    pub save_path: PathBuf,
-    pub threads: usize,
-    pub report_progress: bool,
+mod tasks;
+use tasks::*;
+
+type Sessions = Arc<Mutex<HashMap<Uuid, Addr<MyWs>>>>;
+
+// WebSocket Actor
+
+#[derive(Message)]
+#[rtype(result = "()")]
+struct WsMessage(pub String);
+
+struct MyWs {
+    id: Uuid,
+    sessions: Sessions,
 }
 
-pub struct Downloader {
-    config: DownloadConfig,
-    temp_path: PathBuf,
-    total_size: u64,
-    downloaded: Arc<AtomicU64>,
-    completed: Arc<AtomicBool>,
-    supports_range: bool,
-}
+impl Actor for MyWs {
+    type Context = ws::WebsocketContext<Self>;
 
-impl Downloader {
-    pub fn new(config: DownloadConfig) -> Result<Self> {
-        // 创建临时文件路径
-        let temp_path = config.save_path.with_extension("download");
-
-        // 获取文件信息
-        let client = reqwest::blocking::Client::new();
-        let response = client.head(&config.url).send()?;
-
-        // 获取文件大小
-        let total_size = response
-            .headers()
-            .get(reqwest::header::CONTENT_LENGTH)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok())
-            .context("Missing Content-Length header")?;
-
-        // 检查范围请求支持
-        let supports_range = response
-            .headers()
-            .get(reqwest::header::ACCEPT_RANGES)
-            .map(|v| v == "bytes")
-            .unwrap_or(false);
-
-        Ok(Self {
-            config,
-            temp_path,
-            total_size,
-            downloaded: Arc::new(AtomicU64::new(0)),
-            completed: Arc::new(AtomicBool::new(false)),
-            supports_range,
-        })
+    fn started(&mut self, ctx: &mut Self::Context) {
+        let addr = ctx.address();
+        block_on(self.sessions.lock()).insert(self.id, addr);
     }
-
-    pub fn start(&self) -> Result<()> {
-        // 创建临时文件
-        File::create(&self.temp_path)?;
-
-        // 实际线程数处理
-        let threads = if self.supports_range {
-            self.config.threads
-        } else {
-            1
-        };
-
-        // 启动下载线程
-        let mut handles = vec![];
-        for i in 0..threads {
-            let handle = self.spawn_download_thread(i, threads)?;
-            handles.push(handle);
-        }
-
-        // 启动进度报告线程
-        let progress_handle = if self.config.report_progress {
-            Some(self.spawn_progress_thread())
-        } else {
-            None
-        };
-
-        // 等待下载完成
-        for handle in handles {
-            handle.join().map_err(|_| anyhow::anyhow!("Thread panicked"))??;
-        }
-
-        // 完成处理
-        self.completed.store(true, Ordering::Relaxed);
-        if let Some(h) = progress_handle {
-            h.join().unwrap();
-        }
-
-        // 重命名临时文件
-        fs::rename(&self.temp_path, &self.config.save_path)?;
-
-        Ok(())
-    }
-
-    fn spawn_download_thread(&self, thread_id: usize, total_threads: usize) -> Result<thread::JoinHandle<Result<()>>> {
-        let url = self.config.url.clone();
-        let temp_path = self.temp_path.clone();
-        let downloaded = self.downloaded.clone();
-        let supports_range = self.supports_range;
-
-        let (start, end) = if supports_range {
-            let chunk_size = self.total_size / total_threads as u64;
-            let start = thread_id as u64 * chunk_size;
-            let end = if thread_id == total_threads - 1 {
-                self.total_size - 1
-            } else {
-                start + chunk_size - 1
-            };
-            (Some(start), Some(end))
-        } else {
-            (None, None)
-        };
-
-        Ok(thread::spawn(move || {
-            let client = reqwest::blocking::Client::new();
-            let mut request = client.get(&url);
-
-            if let (Some(s), Some(e)) = (start, end) {
-                request = request.header("Range", format!("bytes={}-{}", s, e));
-            }
-
-            let mut response = request.send()?;
-            let mut file = OpenOptions::new().write(true).open(temp_path)?;
-
-            let mut buffer = [0u8; 1024 * 1024]; // 1MB buffer
-            let mut position = start.unwrap_or(0);
-
-            loop {
-                let bytes_read = response.read(&mut buffer)?;
-                if bytes_read == 0 {
-                    break;
-                }
-
-                file.seek(SeekFrom::Start(position))?;
-                file.write_all(&buffer[..bytes_read])?;
-
-                downloaded.fetch_add(bytes_read as u64, Ordering::Relaxed);
-                position += bytes_read as u64;
-            }
-
-            Ok(())
-        }))
-    }
-
-    fn spawn_progress_thread(&self) -> thread::JoinHandle<()> {
-        let downloaded = self.downloaded.clone();
-        let total_size = self.total_size;
-        let completed = self.completed.clone();
-
-        thread::spawn(move || {
-            while !completed.load(Ordering::Relaxed) {
-                let downloaded_bytes = downloaded.load(Ordering::Relaxed);
-                let progress = (downloaded_bytes as f64 / total_size as f64) * 100.0;
-                println!("{:.2}%", progress);
-                thread::sleep(Duration::from_secs(1));
-            }
-        })
+    fn stopped(&mut self, _ctx: &mut Self::Context) {
+        block_on(self.sessions.lock()).remove(&self.id);
     }
 }
 
-impl Drop for Downloader {
-    fn drop(&mut self) {
-        if !self.completed.load(Ordering::Relaxed) {
-            let _ = fs::remove_file(&self.temp_path);
-        }
+impl Handler<WsMessage> for MyWs {
+    type Result = ();
+    fn handle(&mut self, msg: WsMessage, ctx: &mut Self::Context) {
+        ctx.text(msg.0);
     }
 }
 
-// 使用示例
-fn main() -> Result<()> {
-    let config = DownloadConfig {
-        url: "https://mirrors.sustech.edu.cn/Adoptium/17/jre/x64/windows/OpenJDK17U-jre_x64_windows_hotspot_17.0.14_7.zip".to_string(),
-        save_path: PathBuf::from("d:/cpw/OpenJDK17U-jre_x64_windows_hotspot_17.0.14_7.zip"),
-        threads: 1,
-        report_progress: false,
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWs {
+    fn handle(&mut self, _: Result<ws::Message, ws::ProtocolError>, _: &mut Self::Context) {}
+}
+
+// 任务队列
+
+#[derive(Clone)]
+struct Job {
+    id: Uuid,
+    module: String,
+    version: Option<String>,
+}
+#[derive(Default)]
+struct QueueState {
+    running: bool,
+    queue: VecDeque<Job>,
+}
+type Queue = Arc<Mutex<QueueState>>;
+
+// DTO
+
+#[derive(Deserialize)]
+struct SubmitRequest {
+    module: String,
+    version: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SubmitResp {
+    id: Uuid,
+}
+
+#[derive(Deserialize)]
+struct FeedbackReq {
+    id: Uuid,
+    ack: String,
+}
+
+// 路由
+
+#[post("/submit")]
+async fn submit(
+    sessions: Data<Sessions>,
+    queue: Data<Queue>,
+    Json(req): Json<SubmitRequest>,
+) -> impl Responder {
+    let id = Uuid::new_v4();
+    let job = Job {
+        id,
+        module: req.module,
+        version: req.version,
     };
 
-    let downloader = Downloader::new(config)?;
-    downloader.start()?;
-    Ok(())
+    {
+        let mut q = queue.lock().await;
+        q.queue.push_back(job);
+        if !q.running {
+            q.running = true;
+            spawn_worker(queue.clone(), sessions.clone());
+        }
+    }
+
+    HttpResponse::Ok().json(SubmitResp { id })
+}
+
+#[get("/ws/{id}")]
+async fn ws_index(
+    req: HttpRequest,
+    stream: Payload,
+    path: Path<Uuid>,
+    sessions: Data<Sessions>,
+) -> actix_web::Result<HttpResponse> {
+    let id = path.into_inner();
+    ws::start(
+        MyWs {
+            id,
+            sessions: sessions.get_ref().clone(),
+        },
+        &req,
+        stream,
+    )
+}
+
+#[post("/feedback")]
+async fn feedback(Json(req): Json<FeedbackReq>) -> impl Responder {
+    println!("ACK {}: {}", req.id, req.ack);
+    HttpResponse::Ok().body("received")
+}
+
+// worker
+
+fn spawn_worker(queue: Data<Queue>, sessions: Data<Sessions>) {
+    task::spawn(async move {
+        loop {
+            // 1. 取队第一个任务
+            let job = {
+                let mut q = queue.lock().await;
+                q.queue.pop_front()
+            };
+
+            // 队列空则标记停止 & 退出
+            let job = match job {
+                Some(j) => j,
+                None => {
+                    queue.lock().await.running = false;
+                    break;
+                }
+            };
+
+            // 2. 按 module 调度
+            let exec_result = match job.module.as_str() {
+                "classify_versions" => classify_versions_task().await,
+                "original_download" => {
+                    let mc_home = std::path::Path::new(
+                        r"C:\Users\smh20\Documents\Rust\RTAPI\.minecraft"
+                    );
+                    // 如果前端没带版本就用默认
+                    let ver = job.version.as_deref().unwrap_or("1.20.4");
+                    original_download_task(ver, mc_home).await
+                }
+                unknown => Ok(format!("Unknown module: {unknown}")),
+            };
+
+            // 3. 结果文本化
+            let result_text = match exec_result {
+                Ok(s)  => s,
+                Err(e) => format!("Task failed: {e}"),
+            };
+
+            // 4. 推送到对应 WebSocket 会话
+            if let Some(addr) = sessions.lock().await.get(&job.id) {
+                addr.do_send(WsMessage(result_text));
+            }
+        }
+    });
+}
+
+
+// main
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
+    let queue: Queue = Arc::new(Mutex::new(QueueState::default()));
+
+    HttpServer::new(move || {
+        App::new()
+            .wrap(
+                Cors::default()
+                    .allow_any_origin()
+                    .allow_any_header()
+                    .allow_any_method()
+                    .max_age(3600),
+            )
+            .app_data(Data::new(sessions.clone()))
+            .app_data(Data::new(queue.clone()))
+            .service(submit)
+            .service(ws_index)
+            .service(feedback)
+            .service(fs::Files::new("/", "./").index_file("index.html"))
+    })
+        .bind(("0.0.0.0", 3000))?
+        .run()
+        .await
 }
