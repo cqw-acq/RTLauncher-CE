@@ -166,7 +166,7 @@ fn spawn_worker(queue: Data<Queue>, sessions: Data<Sessions>) {
                 "classify_versions" => classify_versions_task().await,
                 "original_download" => {
                     let mc_home = std::path::Path::new(
-                        r"C:\Users\smh20\Documents\Rust\RTAPI\.minecraft"
+                        r"/Users/chuqi/Documents/minecraft"
                     );
                     // 如果前端没带版本就用默认
                     let ver = job.version.as_deref().unwrap_or("1.20.4");
@@ -213,7 +213,7 @@ async fn main() -> std::io::Result<()> {
             .service(feedback)
             .service(fs::Files::new("/", "./").index_file("index.html"))
     })
-        .bind(("0.0.0.0", 3000))?
+        .bind(("localhost", 3000))?
         .run()
         .await
 }
